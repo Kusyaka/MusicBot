@@ -45,7 +45,7 @@ class CommandsHandler:
 
         self._FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                                'options': '-vn'}
-        self._vc = ""
+        self._vc: discord.VoiceClient = None
 
     async def process_commands(self, message: Message):
         if not str(message.content).startswith(config.prefix):
@@ -114,6 +114,11 @@ class CommandsHandler:
         self._last_url = ""
         self._music_queue = []
         self._is_playing = False
+
+    async def leave(self, ctx):
+        await self.stop(ctx)
+        await self._vc.disconnect()
+
 
     async def autoplay(self, ctx):
         await self.auto(ctx)
