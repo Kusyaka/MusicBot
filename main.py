@@ -188,7 +188,7 @@ class CommandsHandler:
 
             m_url = self._music_queue[0][0]
 
-            if self._vc == "" or not self._vc.is_connected():
+            if self._vc is None or not self._vc.is_connected():
                 self._vc = await self._music_queue[0][1].connect()
 
             self._music_queue.pop(0)
