@@ -88,9 +88,9 @@ class CommandsHandler:
                     video_format = None
                     info = ytdl.extract_info(url, download=False)
                     if 'entries' in info:
-                        video_format = info['entries'][0]["formats"][0]
+                        video_format = info['entries'][0]["formats"][0]["url"]
                     elif 'formats' in info:
-                        video_format = info["formats"][0]
+                        video_format = info["formats"][0]["url"]
 
                 except Exception:
                     return False, False
