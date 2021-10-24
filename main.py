@@ -70,19 +70,32 @@ class CommandsHandler:
                 try:
                     info = ytdl.extract_info(f"ytsearch:{item}", download=False)['entries'][0]
                     self._last_url = f"https://www.youtube.com/watch?v={info['id']}"
+                    video_format = None
+
+                    if 'entries' in info:
+                        video_format = info['entries'][0]["formats"][0]
+                    elif 'formats' in info:
+                        video_format = info["formats"][0]
+
                 except Exception:
                     return False, False
 
-            return info['formats'][0]['url'], info['title']
+            return video_format, info['title']
 
         def get_ytdl(url):
             with YoutubeDL(self._YTDL_OPTIONS) as ytdl:
                 try:
+                    video_format = None
                     info = ytdl.extract_info(url, download=False)
+                    if 'entries' in info:
+                        video_format = info['entries'][0]["formats"][0]
+                    elif 'formats' in info:
+                        video_format = info["formats"][0]
+
                 except Exception:
                     return False, False
 
-            return info['formats'][0]['url'], info['title']
+            return video_format, info['title']
 
 
         if (url.startswith("https://") or url.startswith("www.")):
@@ -134,15 +147,21 @@ class CommandsHandler:
         def get_ytdl(url):
             with YoutubeDL(self._YTDL_OPTIONS) as ytdl:
                 try:
+                    video_format = None
                     info = ytdl.extract_info(url, download=False)
+                    if 'entries' in info:
+                        video_format = info['entries'][0]["formats"][0]
+                    elif 'formats' in info:
+                        video_format = info["formats"][0]
+
                 except Exception:
                     return False, False
 
-            return info['formats'][0]['url'], info['title']
+            return video_format, info['title']
 
         browser = webdriver.Firefox(service_log_path="nul")
         browser.get(self._last_url)
-        time.sleep(1.5)
+        await asyncio.sleep(3)
         data = browser.page_source
         browser.close()
 
