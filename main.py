@@ -159,7 +159,7 @@ class CommandsHandler:
 
             return video_format, info['title']
 
-        browser = webdriver.Firefox(service_log_path="nul")
+        browser = webdriver.Firefox(service_log_path=os.path.devnull)
         browser.get(self._last_url)
         await asyncio.sleep(3)
         data = browser.page_source
