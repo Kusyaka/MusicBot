@@ -162,7 +162,7 @@ class CommandsHandler:
 
         options = Options()
         options.add_argument("--headless")
-        driver = webdriver.Firefox(options=options, service_log_path=os.devnull)
+        driver = webdriver.Firefox(firefox_options=options, log_path=os.devnull)
         driver.get(self._last_url)
         time.sleep(2)
         elems = driver.execute_script(
