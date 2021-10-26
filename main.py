@@ -169,7 +169,7 @@ class CommandsHandler:
             'return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
         links = []
         for i in elems[1:]:
-            links.append(f"https://www.youtube.com{i.get('href')}")
+            links.append(f"https://www.youtube.com{i.get_attribute('href')}")
         self._last_url = links[random.randint(0, 3 if len(links)-1 > 3 else len(links)-1)]
         url, title = get_ytdl(self._last_url)
         self._music_queue.append([url, self._vc.channel, title])
