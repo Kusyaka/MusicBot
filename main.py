@@ -313,7 +313,7 @@ class EventHandler(commands.Cog):
         self.command_handler = CommandsHandler(bot, config)
 
     @commands.Cog.listener()
-    async def on_connected(self):
+    async def on_ready(self):
         print("Connected")
 
     @commands.Cog.listener()
@@ -325,6 +325,6 @@ class EventHandler(commands.Cog):
 with open('config.json') as f:
     globals()["config"] = Config(json.load(f))
 
-bot = commands.Bot(command_prefix=config.prefix, self_bot=True)
+bot = commands.Bot(command_prefix=config.prefix)
 bot.add_cog(EventHandler(bot, config))
-bot.run(config.token, bot=False)
+bot.run(config.token)
