@@ -8,8 +8,7 @@ from discord import Message
 import time
 
 from selenium import webdriver
-from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
-from bs4 import BeautifulSoup
+from selenium.webdriver.firefox.options import Options as Options
 import json
 
 from youtube_dl import YoutubeDL
@@ -161,21 +160,17 @@ class CommandsHandler:
 
             return video_format, info['title']
 
-        caps = DesiredCapabilities.PHANTOMJS
-        caps["phantomjs.page.settings.userAgent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:93.0) Gecko/20100101 Firefox/93.0"
-        browser = webdriver.PhantomJS(service_log_path=os.path.devnull, desired_capabilities=caps)
-
-        browser.get(self._last_url)
-        await asyncio.sleep(3)
-        data = browser.page_source
-        browser.close()
-
-        soup = BeautifulSoup(data, 'html.parser')
-        a = soup.find_all("a", {"class": "yt-simple-endpoint inline-block style-scope ytd-thumbnail"})
+        options = Options()
+        options.add_argument("--headless")
+        driver = webdriver.Firefox(firefox_options=options, log_path=os.devnull)
+        driver.get(self._last_url)
+        time.sleep(2)
+        elems = driver.execute_script(
+            'return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
         links = []
-        for i in a[1:]:
+        for i in elems[1:]:
             links.append(f"https://www.youtube.com{i.get('href')}")
-        self._last_url = links[random.randint(0, 4 if len(links)-1 > 4 else len(links)-1)]
+        self._last_url = links[random.randint(0, 3 if len(links)-1 > 3 else len(links)-1)]
         url, title = get_ytdl(self._last_url)
         self._music_queue.append([url, self._vc.channel, title])
         await self._play_music(ctx)
@@ -193,6 +188,7 @@ class CommandsHandler:
 
             # self._vc.play(discord.FFmpegPCMAudio(m_url, **self._FFMPEG_OPTIONS))
             self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS))
+            time.sleep(1)
             while self._vc.is_playing():
                 await asyncio.sleep(1)
             await self._play_next(ctx)
@@ -218,6 +214,7 @@ class CommandsHandler:
             self._music_queue.pop(0)
 
             self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS))
+            time.sleep(1)
             while self._vc.is_playing():
                 await asyncio.sleep(1)
             await self._play_next(ctx)
