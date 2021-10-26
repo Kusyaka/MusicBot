@@ -1,7 +1,6 @@
 import asyncio
 from discord import Embed
 import os
-import random
 import discord
 from discord.ext import commands
 from discord import Message
@@ -14,6 +13,7 @@ import json
 from youtube_dl import YoutubeDL
 
 config = None
+
 
 class Config:
     def __init__(self, config_dict: dict = None, **kwargs):
@@ -98,8 +98,7 @@ class CommandsHandler:
 
             return video_format, info['title']
 
-
-        if (url.startswith("https://") or url.startswith("www.")):
+        if url.startswith("https://") or url.startswith("www."):
             turl, title = get_ytdl(url)
             self._last_url = url
         else:
@@ -121,7 +120,7 @@ class CommandsHandler:
             await self._play_music(ctx)
 
     async def skip(self, ctx):
-        await self._play_next(ctx)
+        self._vc.stop()
 
     async def stop(self, ctx):
         self._vc.stop()
@@ -132,7 +131,6 @@ class CommandsHandler:
     async def leave(self, ctx):
         await self.stop(ctx)
         await self._vc.disconnect()
-
 
     async def autoplay(self, ctx):
         await self.auto(ctx)
@@ -167,13 +165,11 @@ class CommandsHandler:
         time.sleep(2)
         elems = driver.execute_script(
             'return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
-        links = []
-        for i in elems[1:]:
-            links.append(f"https://www.youtube.com{i.get_attribute('href')}")
-        self._last_url = links[random.randint(0, 3 if len(links)-1 > 3 else len(links)-1)]
+        # self._last_url = links[random.randint(0, 3 if len(links)-1 > 3 else len(links)-1)]
+        self._last_url = elems[1].get_attribute('href')
         url, title = get_ytdl(self._last_url)
         self._music_queue.append([url, self._vc.channel, title])
-        await self._play_music(ctx)
+        await self._play_next(ctx)
 
     async def _pl(self, ctx):
         await self._play_next(ctx)
@@ -187,17 +183,13 @@ class CommandsHandler:
             self._music_queue.pop(0)
 
             # self._vc.play(discord.FFmpegPCMAudio(m_url, **self._FFMPEG_OPTIONS))
-            self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS))
-            time.sleep(1)
-            while self._vc.is_playing():
-                await asyncio.sleep(1)
-            await self._play_next(ctx)
+            self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: self.__play(ctx))
 
         else:
             if not self._is_playing:
                 return
             print(f"autoplay: {self._autoplay}")
-            if self._autoplay and not self._vc.is_playing():
+            if self._autoplay:
                 await self.__autoplay(ctx)
                 return
             self._is_playing = False
@@ -213,14 +205,15 @@ class CommandsHandler:
 
             self._music_queue.pop(0)
 
-            self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS))
-            time.sleep(1)
-            while self._vc.is_playing():
-                await asyncio.sleep(1)
-            await self._play_next(ctx)
+            self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: self.__play(ctx))
         else:
             self._is_playing = False
 
+    def __play(self, ctx):
+        if self._is_playing:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._play_next(ctx))
 
 
 class EventHandler(commands.Cog):
