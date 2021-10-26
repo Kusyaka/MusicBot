@@ -8,6 +8,7 @@ from discord import Message
 import time
 
 from selenium import webdriver
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from bs4 import BeautifulSoup
 import json
 
@@ -45,6 +46,7 @@ class CommandsHandler:
 
         self._FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                                'options': '-vn'}
+
         self._vc: discord.VoiceClient = None
 
     async def process_commands(self, message: Message):
@@ -159,7 +161,10 @@ class CommandsHandler:
 
             return video_format, info['title']
 
-        browser = webdriver.Firefox(service_log_path=os.path.devnull)
+        caps = DesiredCapabilities.PHANTOMJS
+        caps["phantomjs.page.settings.userAgent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:93.0) Gecko/20100101 Firefox/93.0"
+        browser = webdriver.PhantomJS(service_log_path=os.path.devnull, desired_capabilities=caps)
+
         browser.get(self._last_url)
         await asyncio.sleep(3)
         data = browser.page_source
