@@ -1,23 +1,33 @@
 import asyncio
+import random
 import datetime
 import os
-import random
+import time
+import json
+from enum import Enum
 
 import discord
+from async_timeout import timeout
 from discord.ext import commands
-from discord import Message
-import time
+from youtube_dl import YoutubeDL
 
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options as Options
-import json
 
-from youtube_dl import YoutubeDL
+config = servers_data = None
 
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
+NoneType = type(None)
 
-config = None
+
+class Sites(Enum):
+    Spotify = "Spotify"
+    Spotify_Playlist = "Spotify Playlist"
+    YouTube = "YouTube"
+    Twitter = "Twitter"
+    SoundCloud = "SoundCloud"
+    Bandcamp = "Bandcamp"
+    Custom = "Custom"
+    Unknown = "Unknown"
 
 
 class Config:
@@ -29,9 +39,7 @@ class Config:
         for arg in kwargs.keys():
             self.__setattr__(str(arg), kwargs[arg])
 
-
-class Track():
-    def __init__(self, config_dict: dict = None, **kwargs):
+    def add_data(self, config_dict: dict = None, **kwargs):
         if config_dict is not None:
             for arg in config_dict.keys():
                 self.__setattr__(arg, config_dict[arg])
@@ -39,292 +47,286 @@ class Track():
         for arg in kwargs.keys():
             self.__setattr__(str(arg), kwargs[arg])
 
-    def set_data(self, name: str, value):
-        self.__setattr__(name, value)
+    def save(self, filename):
+        with open(filename, "w") as f:
+            json.dump(vars(self), f)
 
 
-class CommandsHandler:
+class Track(Config):
+    def __init__(self, title, duration, url, thumbnail, config_dict: dict = None, **kwargs):
+        super().__init__(config_dict, **kwargs)
+        self.title = title
+        self.duration = duration
+        self.url = url
+        self.thumbnail = thumbnail
+
+    def get_media_url(self, ytdl: YoutubeDL):
+        data = ytdl.extract_info(url=self.url, process=False, download=False)
+        return data['url']
+
+    def create_embed(self):
+        embed = (discord.Embed(title='Now playing',
+                               description=f'```css\n{self.title}\n```',
+                               color=discord.Color.blurple())
+                 .add_field(name='Duration', value=self.duration)
+                 .add_field(name='URL', value=f'[Click]({self.url})')
+                 .set_thumbnail(url=self.thumbnail))
+
+        return embed
+
+
+with open('config.json') as f:
+    globals()["config"] = Config(json.load(f))
+
+
+# with open('settings.json') as f:
+#     globals()['servers_data'] = Config(json.load(f))
+
+
+class CommandsHandler(commands.Cog):
     def __init__(self, bot, config):
         self._bot = bot
         self._config = config
-        auth = SpotifyClientCredentials(client_id="3ac5c7d1174e486d94ea70af4799fd7f",
-                                        client_secret="8f1047b890be4c859d5e1e36dc09300e")
-        self._sp: spotipy.Spotify = spotipy.Spotify(auth_manager=auth)
-        self._fr = open("autoplay", "r")
+        self._autoplay = {}
 
-        self._autoplay = False if int(self._fr.read()) == 0 else True
+        self._last_url = {}
 
-        del self._fr
-        self._last_url = ""
-        self._is_command = False
+        self._music_queue = {}
+        self._is_playing = {}
 
-        self._music_queue = []
-        self._is_playing = False
+        self._YTDL_OPTIONS = {
+            'format': 'bestaudio/best',
+            'outtmpl': 'downloads/%(extractor)s-%(id)s-%(title)s.%(ext)s',
+            'restrictfilenames': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'quiet': True,
+            'no_warnings': True,
+            'default_search': 'auto',
+            'source_address': '0.0.0.0',
+            'extract_flat': True,
+            'skip_download': True,
+        }
 
-        self._YTDL_OPTIONS = {'format': 'bestaudio/best'}
+        self._FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 '
+                                                  '-reconnect_delay_max 5',
+                                'options': '-vn'}
 
-        self._FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                               'options': '-vn'}
+        self._vc = {}
+        self.is_live = {}
 
-        self._vc: discord.VoiceClient = None
+        self.ytdl = YoutubeDL(self._YTDL_OPTIONS)
+        self.ytdl.cache.remove()
 
-    async def process_commands(self, message: Message):
-        if not str(message.content).startswith(config.prefix):
-            return
-        command = str(message.content).split(" ")
-        command_name = command[0].replace(config.prefix, "")
-        if command_name.startswith("_"):
-            return
-        # command_method = self.commands[command_name]
-        command_method = getattr(self, command_name)
-        command_ctx = await self._bot.get_context(message)
-        command_args = [command_ctx]
-        for a in command[1:]:
-            command_args.append(a)
-        await command_method(*tuple(command_args))
+    @commands.command(aliases=['sk'])
+    async def skip(self, ctx):
+        curr_guild = ctx.guild.id
+        self._is_playing[curr_guild] = False
+        (await self.get_voice_client(ctx)).stop()
 
+    @commands.command
+    async def stop(self, ctx):
+        curr_guild = ctx.guild.id
+        try:
+            self.is_live[curr_guild] = False
+        except:
+            pass
+        self._music_queue[curr_guild] = []
+        (await self.get_voice_client(ctx)).stop()
+        self._is_playing[curr_guild] = False
+
+
+    @commands.command()
+    async def join(self, ctx):
+        await ctx.author.voice.channel.connect()
+
+    @commands.command()
+    async def leave(self, ctx):
+        curr_guild = ctx.guild.id
+        await self.stop(ctx)
+        self._vc[curr_guild].disconnect()
+        del self._vc[curr_guild]
+
+    @commands.command(aliases=['auto'])
+    async def autoplay(self, ctx):
+        curr_guild = ctx.guild.id
+        if curr_guild not in self._autoplay:
+            self._autoplay[curr_guild] = True
+        self._autoplay[curr_guild] = not self._autoplay[curr_guild]
+        if self._autoplay[curr_guild]:
+            await ctx.send("Autoplay enabled")
+        else:
+            await ctx.send("Autoplay disabled")
+
+    @commands.command()
     async def queue(self, ctx: commands.Context):
         txt = ""
-        for i, q in enumerate(self._music_queue):
-            txt += f"{i+1}. **{q.title}**\n"
+        for i, q in enumerate(self._music_queue[ctx.guild.id]):
+            txt += f"{i + 1}. **{q.title}**\n"
 
         await ctx.send(txt)
 
-    async def play(self, ctx: commands.Context, *args):
-        url = " ".join(args)
+    @commands.command(aliases=['p', 'pl'])
+    async def play(self, ctx, *, query: str):
+        curr_guild = ctx.guild.id
+        if curr_guild not in self._autoplay:
+            self._autoplay[curr_guild] = False
+        song_type = self.identify_url(query)
+        track = None
+        if song_type == Sites.Unknown:
+            track = self.search_yt(ctx, query)
+        elif song_type == Sites.YouTube:
+            track = self.get_ytdl(ctx, query)
 
-        def search_yt(item):
-            with YoutubeDL(self._YTDL_OPTIONS) as ytdl:
+        track.add_data(type=song_type)
+
+        if curr_guild not in self._music_queue:
+            self._music_queue[curr_guild] = []
+        self._music_queue[curr_guild].append(track)
+        if curr_guild not in self._is_playing:
+            self._is_playing[curr_guild] = False
+
+        if not self._is_playing[curr_guild]:
+            asyncio.get_event_loop().create_task(self._play_queue(ctx))
+
+    def search_yt(self, ctx, item):
+        try:
+            data = self.ytdl.extract_info(f"ytsearch:{item}", process=False, download=False)['entries'][0]
+            self._last_url[ctx.guild.id] = f"https://www.youtube.com/watch?v={data['id']}"
+
+            return Track(title=data['title'], url=data['webpage_url'],
+                         thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
+
+        except Exception:
+            return False
+
+    def get_ytdl(self, ctx, url):
+        try:
+            data = self.ytdl.extract_info(url, process=False, download=False)
+            self._last_url[ctx.guild.id] = url
+
+            return Track(title=data['title'], url=data['webpage_url'],
+                         thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
+
+        except Exception:
+            return False
+
+    def identify_url(self, url):
+        if url is None:
+            return Sites.Unknown
+
+        if "https://www.youtu" in url or "https://youtu.be" in url:
+            return Sites.YouTube
+
+        if "https://open.spotify.com/track" in url:
+            return Sites.Spotify
+
+        if "https://open.spotify.com/playlist" in url or "https://open.spotify.com/album" in url:
+            return Sites.Spotify_Playlist
+
+        if "bandcamp.com/track/" in url:
+            return Sites.Bandcamp
+
+        if "https://twitter.com/" in url:
+            return Sites.Twitter
+
+        if "soundcloud.com/" in url:
+            return Sites.SoundCloud
+
+        # If no match
+        return Sites.Unknown
+
+    async def get_voice_client(self, ctx):
+        if ctx.guild.id not in self._vc:
+            self._vc[ctx.guild.id] = None
+
+        state = self._vc[ctx.guild.id]
+        if not state:
+            state = await ctx.author.voice.channel.connect()
+            self._vc[ctx.guild.id] = state
+
+        return state
+
+    async def _play_queue(self, ctx):
+        curr_guild = ctx.guild.id
+        while len(self._music_queue[curr_guild]) > 0:
+
+            await self._play_song(ctx)
+
+            while self._is_playing[curr_guild]:
+                await asyncio.sleep(5)
+
+            if self._autoplay[curr_guild]:
+                self.__autoplay(ctx)
+
+    async def _play_song(self, ctx):
+        curr_guild = ctx.guild.id
+        curr_vc = await self.get_voice_client(ctx)
+        m_url = self._music_queue[curr_guild][0].get_media_url(self.ytdl)
+        print(self._music_queue[curr_guild][0].url)
+
+        curr_vc.stop()
+        self._is_playing[curr_guild] = True
+
+        def end():
+            self._is_playing[curr_guild] = False
+        if curr_guild not in self.is_live:
+            self.is_live[curr_guild] = False
+        self.is_live[curr_guild] = self._music_queue[curr_guild][0].live
+        self._music_queue[curr_guild].pop(0)
+        if self.is_live[curr_guild]:
+            while self.is_live[curr_guild]:
                 try:
-                    data = ytdl.extract_info(f"ytsearch:{item}", download=False)['entries'][0]
-                    self._last_url = f"https://www.youtube.com/watch?v={data['id']}"
-
-                    if "_type" in data:
-                        tracks = []
-                        for e in data["entries"]:
-                            tracks.append(Track(media_url=e["formats"][0]["url"], title=e['title'], url=e['webpage_url'], thumbnail=e['thumbnail'], duration=e['duration']))
-                        return [data["title"], data["webpage_url"], tracks]
-
-                    return Track(media_url=data['url'], title=data['title'], url=data['webpage_url'],
-                                 thumbnail=data['thumbnail'], duration=data['duration'])
-                except Exception:
-                    return False
-
-
-
-        def get_ytdl(url):
-            with YoutubeDL(self._YTDL_OPTIONS) as ytdl:
-                try:
-                    data = ytdl.extract_info(url, download=False)
-                    if "_type" in data:
-                        tracks = []
-                        for e in data["entries"]:
-                            tracks.append(
-                                Track(media_url=e["formats"][0]["url"], title=e['title'], url=e['webpage_url'],
-                                      thumbnail=e['thumbnail'], duration=e['duration']))
-                        return [data["title"], data["webpage_url"], tracks]
-
-                    return Track(media_url=data['url'], title=data['title'], url=data['webpage_url'],
-                                 thumbnail=data['thumbnail'], duration=data['duration'])
-
-                except Exception:
-                    return False
-
-
-        wait_msg = discord.Embed(title="Идёт поиск...", description="Может занять некоторое время", color=0x46c077)
-        wait_msg = await ctx.send(embed=wait_msg)
-
-
-
-        voice_channel = ctx.author.voice.channel
-
-        if voice_channel is None:
-            embed = discord.Embed(title="Вы не в голосовом канале ", color=0xffff00)
-            msg = await ctx.send(embed=embed)
-            await msg.delete(delay=5)
+                    async with timeout(7200):
+                        curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end())
+                        while self._is_playing[curr_guild]:
+                            await asyncio.sleep(5)
+                except asyncio.TimeoutError:
+                    m_url = self._music_queue[curr_guild][0].get_media_url(self.ytdl)
             return
-
-        if url.startswith("https://www.youtube") or url.startswith("www.youtube"):
-            track = get_ytdl(url)
-            self._last_url = url
         else:
-            track = search_yt(url)
-        if type(track) == bool:
-            embed = discord.Embed(title="Не найдено", description=url, color=0xff0000)
-            msg = await ctx.send(embed=embed)
-            await msg.delete(delay=5)
-            return
+            curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end())
 
-        if type(track) == list:
-            for t in track[2]:
-                self._music_queue.append(t)
-
-            embed = discord.Embed(title=track[0], url=track[1],
-                                  description="Добавлен в очередь", color=0x46c077)
-            embed.set_thumbnail(url=track[2][0].thumbnail)
-            await ctx.send(embed=embed)
-        else:
-            embed = discord.Embed(title=track.title, url=track.url,
-                                  description="Добавлен в очередь", color=0x46c077)
-            embed.set_thumbnail(url=track.thumbnail)
-            await ctx.send(embed=embed)
-            track.set_data("voice_channel", voice_channel)
-            self._music_queue.append(track)
-
-        await wait_msg.delete()
-
-        if not self._is_playing:
-            await self._play_music(ctx)
-
-    async def skip(self, ctx):
-        self._vc.stop()
-
-    async def stop(self, ctx):
-        self._vc.stop()
-        self._last_url = ""
-        self._music_queue = []
-        self._is_playing = False
-
-        await ctx.send("Остановлено")
-
-    async def leave(self, ctx):
-        await self.stop(ctx)
-        await self._vc.disconnect()
-
-    async def autoplay(self, ctx):
-        await self.auto(ctx)
-
-    async def auto(self, ctx):
-        self._autoplay = not self._autoplay
-        fw = open("autoplay", "w")
-        fw.write("1" if self._autoplay else "0")
-        await ctx.send("Autoplay enabled") if self._autoplay else await ctx.send("Autoplay disabled")
-
-    async def __autoplay(self, ctx):
-
-        def get_ytdl(url):
-            with YoutubeDL({'format': 'bestaudio/best', 'noplaylist': 'True'}) as ytdl:
-                try:
-                    video_format = None
-                    info = ytdl.extract_info(url, download=False)
-                    if "_type" in info:
-                        return False
-                    if 'entries' in info:
-                        video_format = info['entries'][0]["formats"][0]["url"]
-                    elif 'formats' in info:
-                        video_format = info["formats"][0]["url"]
-
-                except Exception:
-                    return False
-
-            return Track(media_url=video_format, title=info['title'], url=info['webpage_url'], thumbnail=info['thumbnail'], duration=info['duration'])
-
+    def __autoplay(self, ctx):
+        curr_guild = ctx.guild.id
+        print(self._autoplay[curr_guild])
         options = Options()
         options.add_argument("--headless")
         driver = webdriver.Firefox(firefox_options=options, log_path=os.devnull)
         track = None
 
         while True:
-            driver.get(self._last_url)
+            driver.get(self._last_url[curr_guild])
             time.sleep(2)
-            elems = driver.execute_script(
-                'return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
-            self._last_url = random.choice(elems).get_attribute('href')
-            track = get_ytdl(self._last_url)
-            if type(track) == bool:
+            elems = driver.execute_script('return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')[1:]
+            track = self.get_ytdl(ctx, random.choice(elems).get_attribute('href'))
+            if type(track) in (bool, NoneType):
                 continue
             break
 
-        await self._wait_msg.delete()
-
-        track.set_data("voice_channel", ctx.author.voice.channel)
-        self._music_queue.append(track)
-
-        if self._vc is None or not self._vc.is_connected():
-            self._vc = await self._music_queue[0].voice_channel.connect()
-
-        await self._play_next(ctx)
-
-    async def _play_next(self, ctx):
-        self._vc.stop()
-        if len(self._music_queue) > 0:
-            self._is_playing = True
-
-            m_url = self._music_queue[0].media_url
-            track = self._music_queue[0]
-
-            embed = discord.Embed(title=track.title, url=track.url,
-                                  description="Сейчас играет", color=0x46c077)
-            embed.set_thumbnail(url=track.thumbnail)
-            await ctx.send(embed=embed)
-
-            self._music_queue.pop(0)
-
-            # self._vc.play(discord.FFmpegPCMAudio(m_url, **self._FFMPEG_OPTIONS))
-            self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: self.__play(ctx))
-
-        else:
-            if not self._is_playing:
-                return
-            print(f"autoplay: {self._autoplay}")
-            if self._autoplay:
-                wait_msg = discord.Embed(title="Идёт поиск...", description="Может занять некоторое время",
-                                         color=0x46c077)
-                self._wait_msg = await ctx.send(embed=wait_msg)
-                await self.__autoplay(ctx)
-                return
-            self._is_playing = False
-
-    async def _play_music(self, ctx):
-        if len(self._music_queue) > 0:
-            self._is_playing = True
-
-            m_url = self._music_queue[0].media_url
-            track = self._music_queue[0]
-
-            embed = discord.Embed(title=track.title, url=track.url,
-                                  description="Сейчас играет", color=0x46c077)
-            embed.set_thumbnail(url=track.thumbnail)
-            if track.duration == 0:
-                embed.add_field(name="Длительность", value="Стрим", inline=True)
-            else:
-                embed.add_field(name="Длительность", value=str(datetime.timedelta(seconds=track.duration)), inline=True)
-            await ctx.send(embed=embed)
-
-            if self._vc is None or not self._vc.is_connected():
-                self._vc = await ctx.author.voice.channel.connect()
-
-            self._music_queue.pop(0)
-
-            self._vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: self.__play(ctx))
-        else:
-            self._is_playing = False
-
-    def __play(self, ctx):
-        if self._is_playing:
-            loop: asyncio.AbstractEventLoop = self._bot.loop
-            loop.create_task(self._play_next(ctx))
+        self._music_queue[curr_guild].append(track)
 
 
-class EventHandler(commands.Cog):
-    def __init__(self, bot: commands.Bot, config: Config):
-        self.bot = bot
-        self.conf = config
-        self.command_handler = CommandsHandler(bot, config)
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        print("Connected")
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        # print(message)
-        await self.command_handler.process_commands(message)
+bot = commands.Bot(config.prefix)
+bot.add_cog(CommandsHandler(bot, config))
 
 
-with open('config.json') as f:
-    globals()["config"] = Config(json.load(f))
+@bot.event
+async def on_ready():
+    print("Connected")
 
-bot = commands.Bot(command_prefix=config.prefix)
-bot.add_cog(EventHandler(bot, config))
+@bot.event
+async def on_message(message):
+    await bot.process_commands(message)
+
+# @bot.event
+# async def on_message(message):
+#     await bot.process_commands(message)
+
 bot.run(config.token)
+
+
+
+
