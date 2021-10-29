@@ -96,17 +96,14 @@ class CommandsHandler(commands.Cog):
 
         self._YTDL_OPTIONS = {
             'format': 'bestaudio/best',
-            'outtmpl': 'downloads/%(extractor)s-%(id)s-%(title)s.%(ext)s',
-            'restrictfilenames': True,
             'noplaylist': True,
-            'nocheckcertificate': True,
+            'nocheckcertificate': False,
             'ignoreerrors': False,
             'logtostderr': False,
             'quiet': True,
             'no_warnings': True,
             'default_search': 'auto',
             'source_address': '0.0.0.0',
-            'extract_flat': True,
             'skip_download': True,
         }
 
