@@ -61,7 +61,7 @@ class Track(Config):
         self.thumbnail = thumbnail
 
     def get_media_url(self, ytdl: YoutubeDL):
-        data = ytdl.extract_info(url=self.url, process=False, download=False)
+        data = ytdl.extract_info(url=self.url, download=False)
         return data['url']
 
     def create_embed(self):
@@ -192,26 +192,19 @@ class CommandsHandler(commands.Cog):
             asyncio.get_event_loop().create_task(self._play_queue(ctx))
 
     def search_yt(self, ctx, item):
-        try:
-            data = self.ytdl.extract_info(f"ytsearch:{item}", process=False, download=False)['entries'][0]
-            self._last_url[ctx.guild.id] = f"https://www.youtube.com/watch?v={data['id']}"
+        data = self.ytdl.extract_info(f"ytsearch:{item}", download=False)['entries'][0]
 
-            return Track(title=data['title'], url=data['webpage_url'],
-                         thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
+        return Track(title=data['title'], url="https://www.youtube.com/watch?v=" + data['id'],
+                     thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
 
-        except Exception:
-            return False
 
     def get_ytdl(self, ctx, url):
-        try:
-            data = self.ytdl.extract_info(url, process=False, download=False)
-            self._last_url[ctx.guild.id] = url
+        data = self.ytdl.extract_info(url, download=False)
+        self._last_url[ctx.guild.id] = url
 
-            return Track(title=data['title'], url=data['webpage_url'],
-                         thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
+        return Track(title=data['title'], url=data['webpage_url'],
+                     thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
 
-        except Exception:
-            return False
 
     def identify_url(self, url):
         if url is None:
@@ -272,19 +265,27 @@ class CommandsHandler(commands.Cog):
 
         def end():
             self._is_playing[curr_guild] = False
+        def end_s():
+            self.is_live[curr_guild] = False
         if curr_guild not in self.is_live:
             self.is_live[curr_guild] = False
         self.is_live[curr_guild] = self._music_queue[curr_guild][0].live
+        curr_track = self._music_queue[curr_guild][0]
         self._music_queue[curr_guild].pop(0)
         if self.is_live[curr_guild]:
             while self.is_live[curr_guild]:
                 try:
                     async with timeout(7200):
-                        curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end())
+                        if curr_vc.is_playing():
+                            curr_vc.stop()
+                            curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
+                        else:
+                            curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
                         while self._is_playing[curr_guild]:
                             await asyncio.sleep(5)
                 except asyncio.TimeoutError:
-                    m_url = self._music_queue[curr_guild][0].get_media_url(self.ytdl)
+                    m_url = curr_track.get_media_url(self.ytdl)
+
             return
         else:
             curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end())
