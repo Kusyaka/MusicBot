@@ -208,7 +208,7 @@ class CommandsHandler(commands.Cog):
         elif song_type == Sites.YouTube:
             track = self.get_ytdl(ctx, query)
         elif song_type == Sites.Spotify:
-            track = self.get_spotify(ctx, query)
+            track = self.get_spotify_track(ctx, query)
 
         await wait_msg.delete()
         if isinstance(track, bool):
@@ -249,7 +249,7 @@ class CommandsHandler(commands.Cog):
         except:
             return False
 
-    def get_spotify(self, ctx, url: str):
+    def get_spotify_track(self, ctx, url: str):
         query = url.replace("https://open.spotify.com/track/", "")
         query, _ = query.split("?si=")
         strack = self.sp.track(f"spotify:track:{query}")
