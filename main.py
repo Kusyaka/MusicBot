@@ -98,7 +98,6 @@ class CommandsHandler(commands.Cog):
             'format': 'bestaudio/best',
             'extractaudio': True,
             'audioformat': 'mp3',
-            'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
             'restrictfilenames': True,
             'noplaylist': True,
             'nocheckcertificate': True,
@@ -108,7 +107,12 @@ class CommandsHandler(commands.Cog):
             'no_warnings': True,
             'default_search': 'ytsearch',
             'source_address': '0.0.0.0',
-            'simulate': True
+            'simulate': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
         }
 
         self._FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 '
@@ -117,9 +121,10 @@ class CommandsHandler(commands.Cog):
 
         self._vc = {}
         self.is_live = {}
-
+        self.loop = {}
         self.ytdl = YoutubeDL(self._YTDL_OPTIONS)
         self.ytdl.cache.remove()
+        self.is_stoped = {}
 
     @commands.command(aliases=['sk'])
     async def skip(self, ctx):
@@ -131,10 +136,10 @@ class CommandsHandler(commands.Cog):
         self._is_playing[curr_guild] = False
         (await self.get_voice_client(ctx)).stop()
 
-    @commands.command(aliases=['leave'])
+    @commands.command()
     async def stop(self, ctx):
         curr_guild = ctx.guild.id
-
+        self.is_stoped[curr_guild] = True
         try:
             self.is_live[curr_guild] = False
         except:
@@ -142,19 +147,40 @@ class CommandsHandler(commands.Cog):
         self._music_queue[curr_guild] = []
         (await self.get_voice_client(ctx)).stop()
         self._is_playing[curr_guild] = False
+        self.loop[curr_guild] = False
+
+    @commands.command()
+    async def leave(self, ctx):
+        curr_guild = ctx.guild.id
+
+        await self.stop(ctx)
+
         await (await self.get_voice_client(ctx)).disconnect()
         del self._vc[curr_guild]
 
     @commands.command()
     async def join(self, ctx):
-        await ctx.author.voice.channel.connect()
+        await self.get_voice_client(ctx)
+
+    @commands.command(name="loop")
+    async def _loop(self, ctx):
+        curr_guild = ctx.guild.id
+        if curr_guild not in self.loop:
+            self.loop[curr_guild] = True
+        else:
+            self.loop[curr_guild] = not self.loop[curr_guild]
+        if self.loop[curr_guild]:
+            await ctx.send("Loop enabled")
+        else:
+            await ctx.send("Loop disabled")
 
     @commands.command(aliases=['auto'])
     async def autoplay(self, ctx):
         curr_guild = ctx.guild.id
         if curr_guild not in self._autoplay:
             self._autoplay[curr_guild] = True
-        self._autoplay[curr_guild] = not self._autoplay[curr_guild]
+        else:
+            self._autoplay[curr_guild] = not self._autoplay[curr_guild]
         if self._autoplay[curr_guild]:
             await ctx.send("Autoplay enabled")
         else:
@@ -204,7 +230,7 @@ class CommandsHandler(commands.Cog):
         try:
             data = self.ytdl.extract_info(f"ytsearch:{item}", download=False)['entries'][0]
             self._last_url[ctx.guild.id] = data['webpage_url']
-            return Track(title=data['title'], url=data['webpage_url'],
+            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],
                          thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
         except:
             return False
@@ -214,7 +240,7 @@ class CommandsHandler(commands.Cog):
             data = self.ytdl.extract_info(url, download=False)
             self._last_url[ctx.guild.id] = url
 
-            return Track(title=data['title'], url=data['webpage_url'],
+            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],
                          thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
         except:
             return False
@@ -259,6 +285,12 @@ class CommandsHandler(commands.Cog):
         curr_guild = ctx.guild.id
         while len(self._music_queue[curr_guild]) > 0:
 
+            try:
+                if self.is_stoped[curr_guild]:
+                    return
+            except:
+                self.is_stoped[curr_guild] = False
+
             await self._play_song(ctx)
 
             while self._is_playing[curr_guild]:
@@ -270,50 +302,94 @@ class CommandsHandler(commands.Cog):
                 wait_msg = await ctx.send(embed=wait_msg)
                 self.__autoplay(ctx)
                 await wait_msg.delete()
+        self.loop[curr_guild] = False
+
 
     async def _play_song(self, ctx):
         curr_guild = ctx.guild.id
         curr_vc = await self.get_voice_client(ctx)
         curr_track = self._music_queue[curr_guild][0]
-        m_url = self._music_queue[curr_guild][0].get_media_url(self.ytdl)
-        print(self._music_queue[curr_guild][0].url)
-
-        embed = discord.Embed(title=curr_track.title, url=curr_track.url,
-                              description="Сейчас играет", color=0x46c077)
-        embed.set_thumbnail(url=curr_track.thumbnail)
-        await ctx.send(embed=embed)
-
-        curr_vc.stop()
-        self._is_playing[curr_guild] = True
-
-        def end():
-            self._is_playing[curr_guild] = False
-
-        def end_s():
-            self.is_live[curr_guild] = False
-
-        if curr_guild not in self.is_live:
-            self.is_live[curr_guild] = False
-        self.is_live[curr_guild] = self._music_queue[curr_guild][0].live
-
+        try:
+            if self.loop[curr_guild]:
+                self._music_queue[curr_guild].append(curr_vc)
+        except:
+            self.loop[curr_guild] = False
         self._music_queue[curr_guild].pop(0)
-        if self.is_live[curr_guild]:
-            while self.is_live[curr_guild]:
-                try:
-                    async with timeout(7200):
-                        if curr_vc.is_playing():
-                            curr_vc.stop()
-                            curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
-                        else:
-                            curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
-                        while self._is_playing[curr_guild]:
-                            await asyncio.sleep(5)
-                except asyncio.TimeoutError:
-                    m_url = curr_track.get_media_url(self.ytdl)
 
-            return
+        if 9000 < curr_track.duration <= 14400 :
+            if not os.path.exists(f"./{curr_track.id}.mp3"):
+                wait_msg = discord.Embed(title="Трек скачивается...", description="Может занять много времени",
+                                         color=discord.Color.orange())
+                wait_msg = await ctx.send(embed=wait_msg)
+                with YoutubeDL({
+                            'format': 'bestaudio/best',
+                            'keepvideo': False,
+                            'outtmpl': f"./{curr_track.id}.mp3",
+                            'postprocessors': [{
+                                'key': 'FFmpegExtractAudio',
+                                'preferredcodec': 'mp3',
+                                'preferredquality': '192',
+                            }],
+                        }) as ytdl:
+                    ytdl.download([curr_track.url])
+
+                await wait_msg.delete()
+
+            embed = discord.Embed(title=curr_track.title, url=curr_track.url,
+                                  description="Сейчас играет", color=0x46c077)
+            embed.set_thumbnail(url=curr_track.thumbnail)
+            await ctx.send(embed=embed)
+
+            curr_vc.play(discord.FFmpegPCMAudio(source=f"./{curr_track.id}.mp3"),
+                         after=lambda x: end())
+
+        elif curr_track.duration > 14400:
+            wait_msg = discord.Embed(title="Трек слишком длинный",
+                                     description="Попробуйте найти более короткую версию песни",
+                                     color=discord.Color.dark_red())
+            await ctx.send(embed=wait_msg)
+
         else:
-            curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end())
+            m_url = curr_track.get_media_url(self.ytdl)
+            print(curr_track.url)
+
+            embed = discord.Embed(title=curr_track.title, url=curr_track.url,
+                                  description="Сейчас играет", color=0x46c077)
+            embed.set_thumbnail(url=curr_track.thumbnail)
+            await ctx.send(embed=embed)
+
+            curr_vc.stop()
+            self._is_playing[curr_guild] = True
+
+            def end():
+                self._is_playing[curr_guild] = False
+
+            def end_s():
+                self.is_live[curr_guild] = False
+
+            if curr_guild not in self.is_live:
+                self.is_live[curr_guild] = False
+            self.is_live[curr_guild] = curr_track.live
+
+            if self.is_live[curr_guild]:
+                while self.is_live[curr_guild]:
+                    try:
+                        async with timeout(7200):
+                            if curr_vc.is_playing():
+                                curr_vc.stop()
+                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
+                            else:
+                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
+                            while self._is_playing[curr_guild]:
+                                await asyncio.sleep(5)
+                    except asyncio.TimeoutError:
+                        m_url = curr_track.get_media_url(self.ytdl)
+
+                return
+            else:
+                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end())
+
+
 
     def __autoplay(self, ctx):
         curr_guild = ctx.guild.id
@@ -328,7 +404,7 @@ class CommandsHandler(commands.Cog):
             elems = driver.execute_script('return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
             elems = elems[1: 5 if len(elems) >= 5 else len(elems)-1]
             track = self.get_ytdl(ctx, random.choice(elems).get_attribute('href'))
-            if type(track) in (bool, NoneType):
+            if type(track) in (bool, NoneType) or track.duration > 14400:
                 continue
             break
 
