@@ -1,20 +1,21 @@
 import asyncio
-import random
-import datetime
-import os
-import time
 import json
+import os
+import pickle
+import random
+import time
 from enum import Enum
 from typing import Any
-import pickle
 
 import discord
+import spotipy
 from async_timeout import timeout
 from discord.ext import commands
-from youtube_dl import YoutubeDL
-
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options as Options
+from spotipy.oauth2 import SpotifyClientCredentials
+
+from youtube_dl import YoutubeDL
 
 NoneType = type(None)
 
@@ -53,12 +54,13 @@ class Config:
 
 
 class Track(Config):
-    def __init__(self, title, duration, url, thumbnail, config_dict: dict = None, **kwargs):
+    def __init__(self, title, duration, url, thumbnail, live=False, config_dict: dict = None, **kwargs):
         super().__init__(config_dict, **kwargs)
         self.title = title
         self.duration = duration
         self.url = url
         self.thumbnail = thumbnail
+        self.live = live
 
     def get_media_url(self, ytdl: YoutubeDL):
         data = ytdl.extract_info(url=self.url, download=False)
@@ -73,13 +75,6 @@ class Track(Config):
                  .set_thumbnail(url=self.thumbnail))
 
         return embed
-
-
-
-
-
-# with open('settings.json') as f:
-#     globals()['servers_data'] = Config(json.load(f))
 
 
 class CommandsHandler(commands.Cog):
@@ -124,6 +119,9 @@ class CommandsHandler(commands.Cog):
         self.is_stopped = {}
         self.servers = servers_data
         self.curr_track = {}
+        self.sp = spotipy.Spotify = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+            client_id=config.spotify_client_id,
+            client_secret=config.spotify_client_secret))
 
     @commands.command(aliases=['sk'])
     async def skip(self, ctx):
@@ -204,10 +202,13 @@ class CommandsHandler(commands.Cog):
         track = None
         wait_msg = discord.Embed(title="Идёт поиск...", description="Может занять некоторое время", color=0x46c077)
         wait_msg = await ctx.send(embed=wait_msg)
+
         if song_type == Sites.Unknown:
             track = self.search_yt(ctx, query)
         elif song_type == Sites.YouTube:
             track = self.get_ytdl(ctx, query)
+        elif song_type == Sites.Spotify:
+            track = self.get_spotify(ctx, query)
 
         await wait_msg.delete()
         if isinstance(track, bool):
@@ -247,6 +248,14 @@ class CommandsHandler(commands.Cog):
                          thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
         except:
             return False
+
+    def get_spotify(self, ctx, url: str):
+        query = url.replace("https://open.spotify.com/track/", "")
+        query, _ = query.split("?si=")
+        strack = self.sp.track(f"spotify:track:{query}")
+        return Track(title=strack['name'], duration=int(strack['duration_ms'] / 1000),
+                     url=self.search_yt(ctx, f"{strack['artists'][0]['name']} - {strack['name']}").url,
+                     thumbnail=strack['album']['images'][0]['url'])
 
     def identify_url(self, url):
         if url is None:
@@ -307,7 +316,9 @@ class CommandsHandler(commands.Cog):
                 self.is_stopped[curr_guild] = False
                 return
 
-            if len(self._music_queue[curr_guild]) == 0 and self.servers[curr_guild].autoplay and not self.is_stopped[curr_guild]:
+            if len(self._music_queue[curr_guild]) == 0 \
+                    and self.servers[curr_guild].autoplay \
+                    and not self.is_stopped[curr_guild]:
                 wait_msg = discord.Embed(title="Идёт поиск...", description="Может занять некоторое время",
                                          color=0x46c077)
                 wait_msg = await ctx.send(embed=wait_msg)
@@ -429,7 +440,6 @@ try:
         servers_data = pickle.load(f)
 except FileNotFoundError:
     servers_data = {}
-
 
 bot = commands.Bot(config.prefix)
 
