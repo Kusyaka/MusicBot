@@ -5,6 +5,8 @@ import os
 import time
 import json
 from enum import Enum
+from typing import Any
+import pickle
 
 import discord
 from async_timeout import timeout
@@ -13,8 +15,6 @@ from youtube_dl import YoutubeDL
 
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options as Options
-
-config = servers_data = None
 
 NoneType = type(None)
 
@@ -75,8 +75,7 @@ class Track(Config):
         return embed
 
 
-with open('config.json') as f:
-    globals()["config"] = Config(json.load(f))
+
 
 
 # with open('settings.json') as f:
@@ -84,13 +83,11 @@ with open('config.json') as f:
 
 
 class CommandsHandler(commands.Cog):
-    def __init__(self, bot, config):
+    def __init__(self, bot, config, servers_data):
         self._bot = bot
         self._config = config
-        self._autoplay = {}
 
         self._last_url = {}
-
         self._music_queue = {}
         self._is_playing = {}
 
@@ -115,7 +112,7 @@ class CommandsHandler(commands.Cog):
             }],
         }
 
-        self._FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 '
+        self._FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1  '
                                                   '-reconnect_delay_max 5',
                                 'options': '-vn'}
 
@@ -124,26 +121,24 @@ class CommandsHandler(commands.Cog):
         self.loop = {}
         self.ytdl = YoutubeDL(self._YTDL_OPTIONS)
         self.ytdl.cache.remove()
-        self.is_stoped = {}
+        self.is_stopped = {}
+        self.servers = servers_data
+        self.curr_track = {}
 
     @commands.command(aliases=['sk'])
     async def skip(self, ctx):
         curr_guild = ctx.guild.id
-        try:
-            self.is_live[curr_guild] = False
-        except:
-            pass
+        self.is_live[curr_guild] = False
         self._is_playing[curr_guild] = False
+        self.is_stopped[curr_guild] = False
         (await self.get_voice_client(ctx)).stop()
 
     @commands.command()
     async def stop(self, ctx):
         curr_guild = ctx.guild.id
-        self.is_stoped[curr_guild] = True
-        try:
-            self.is_live[curr_guild] = False
-        except:
-            pass
+        self.is_stopped[curr_guild] = True
+        self.is_live[curr_guild] = False
+
         self._music_queue[curr_guild] = []
         (await self.get_voice_client(ctx)).stop()
         self._is_playing[curr_guild] = False
@@ -162,29 +157,35 @@ class CommandsHandler(commands.Cog):
     async def join(self, ctx):
         await self.get_voice_client(ctx)
 
+    def request_data(self, curr_guild, data, default_value: Any = True):
+        self_data = self.__getattribute__(data)
+
+        if curr_guild not in self_data:
+            self_data[curr_guild] = default_value
+        return self_data[curr_guild]
+
     @commands.command(name="loop")
     async def _loop(self, ctx):
         curr_guild = ctx.guild.id
-        if curr_guild not in self.loop:
-            self.loop[curr_guild] = True
-        else:
-            self.loop[curr_guild] = not self.loop[curr_guild]
+
+        self.request_data(curr_guild, "loop")
+        self.loop[curr_guild] = not self.loop[curr_guild]
         if self.loop[curr_guild]:
             await ctx.send("Loop enabled")
+            if self._is_playing[curr_guild]:
+                self._music_queue[curr_guild].append(self.curr_track[curr_guild])
         else:
             await ctx.send("Loop disabled")
 
     @commands.command(aliases=['auto'])
     async def autoplay(self, ctx):
         curr_guild = ctx.guild.id
-        if curr_guild not in self._autoplay:
-            self._autoplay[curr_guild] = True
-        else:
-            self._autoplay[curr_guild] = not self._autoplay[curr_guild]
-        if self._autoplay[curr_guild]:
+        self.servers[curr_guild].autoplay = not self.servers[curr_guild].autoplay
+        if self.servers[curr_guild].autoplay:
             await ctx.send("Autoplay enabled")
         else:
             await ctx.send("Autoplay disabled")
+        self.save_server()
 
     @commands.command()
     async def queue(self, ctx: commands.Context):
@@ -197,8 +198,8 @@ class CommandsHandler(commands.Cog):
     @commands.command(aliases=['p', 'pl'])
     async def play(self, ctx, *, query: str):
         curr_guild = ctx.guild.id
-        if curr_guild not in self._autoplay:
-            self._autoplay[curr_guild] = False
+        self.is_stopped[curr_guild] = False
+        self.loop[curr_guild] = False
         song_type = self.identify_url(query)
         track = None
         wait_msg = discord.Embed(title="Идёт поиск...", description="Может занять некоторое время", color=0x46c077)
@@ -217,14 +218,16 @@ class CommandsHandler(commands.Cog):
 
         track.add_data(type=song_type)
 
-        if curr_guild not in self._music_queue:
-            self._music_queue[curr_guild] = []
+        self.request_data(curr_guild, "_music_queue", default_value=[])
         self._music_queue[curr_guild].append(track)
-        if curr_guild not in self._is_playing:
-            self._is_playing[curr_guild] = False
+        self.request_data(curr_guild, "_is_playing", default_value=False)
 
         if not self._is_playing[curr_guild]:
             asyncio.get_event_loop().create_task(self._play_queue(ctx))
+        else:
+            wait_msg = discord.Embed(title="Добавлено в очередь", description=track.title, url=track.url,
+                                     color=0x46c077)
+            await ctx.send(embed=wait_msg)
 
     def search_yt(self, ctx, item):
         try:
@@ -281,22 +284,30 @@ class CommandsHandler(commands.Cog):
 
         return state
 
+    def update_server(self, ctx):
+        if ctx.guild.id not in self.servers:
+            self.servers[ctx.guild.id] = Config(autoplay=True)
+
+    def save_server(self):
+        with open("servers.dat", "wb") as f:
+            pickle.dump(self.servers, f)
+
     async def _play_queue(self, ctx):
         curr_guild = ctx.guild.id
         while len(self._music_queue[curr_guild]) > 0:
-
-            try:
-                if self.is_stoped[curr_guild]:
-                    return
-            except:
-                self.is_stoped[curr_guild] = False
-
-            await self._play_song(ctx)
+            if not self.is_stopped[curr_guild]:
+                await self._play_song(ctx)
+            else:
+                return
 
             while self._is_playing[curr_guild]:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
 
-            if self._autoplay[curr_guild]:
+            if self.is_stopped[curr_guild]:
+                self.is_stopped[curr_guild] = False
+                return
+
+            if len(self._music_queue[curr_guild]) == 0 and self.servers[curr_guild].autoplay and not self.is_stopped[curr_guild]:
                 wait_msg = discord.Embed(title="Идёт поиск...", description="Может занять некоторое время",
                                          color=0x46c077)
                 wait_msg = await ctx.send(embed=wait_msg)
@@ -304,58 +315,54 @@ class CommandsHandler(commands.Cog):
                 await wait_msg.delete()
         self.loop[curr_guild] = False
 
-
     async def _play_song(self, ctx):
         curr_guild = ctx.guild.id
         curr_vc = await self.get_voice_client(ctx)
-        curr_track = self._music_queue[curr_guild][0]
-        try:
-            if self.loop[curr_guild]:
-                self._music_queue[curr_guild].append(curr_vc)
-        except:
-            self.loop[curr_guild] = False
+        self.curr_track[curr_guild] = self._music_queue[curr_guild][0]
+        if self.loop[curr_guild]:
+            self._music_queue[curr_guild].append(self.curr_track[curr_guild])
         self._music_queue[curr_guild].pop(0)
 
-        if 9000 < curr_track.duration <= 14400 :
-            if not os.path.exists(f"./{curr_track.id}.mp3"):
+        if 9000 < self.curr_track[curr_guild].duration <= 14400:
+            if not os.path.exists(f"./{self.curr_track[curr_guild].id}.mp3"):
                 wait_msg = discord.Embed(title="Трек скачивается...", description="Может занять много времени",
                                          color=discord.Color.orange())
                 wait_msg = await ctx.send(embed=wait_msg)
                 with YoutubeDL({
-                            'format': 'bestaudio/best',
-                            'keepvideo': False,
-                            'outtmpl': f"./{curr_track.id}.mp3",
-                            'postprocessors': [{
-                                'key': 'FFmpegExtractAudio',
-                                'preferredcodec': 'mp3',
-                                'preferredquality': '192',
-                            }],
-                        }) as ytdl:
-                    ytdl.download([curr_track.url])
+                    'format': 'bestaudio/best',
+                    'keepvideo': False,
+                    'outtmpl': f"./{self.curr_track[curr_guild].id}.mp3",
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                }) as ytdl:
+                    ytdl.download([self.curr_track[curr_guild].url])
 
                 await wait_msg.delete()
 
-            embed = discord.Embed(title=curr_track.title, url=curr_track.url,
+            embed = discord.Embed(title=self.curr_track[curr_guild].title, url=self.curr_track[curr_guild].url,
                                   description="Сейчас играет", color=0x46c077)
-            embed.set_thumbnail(url=curr_track.thumbnail)
+            embed.set_thumbnail(url=self.curr_track[curr_guild].thumbnail)
             await ctx.send(embed=embed)
 
-            curr_vc.play(discord.FFmpegPCMAudio(source=f"./{curr_track.id}.mp3"),
+            curr_vc.play(discord.FFmpegPCMAudio(source=f"./{self.curr_track[curr_guild].id}.mp3"),
                          after=lambda x: end())
 
-        elif curr_track.duration > 14400:
+        elif self.curr_track[curr_guild].duration > 14400:
             wait_msg = discord.Embed(title="Трек слишком длинный",
                                      description="Попробуйте найти более короткую версию песни",
                                      color=discord.Color.dark_red())
             await ctx.send(embed=wait_msg)
 
         else:
-            m_url = curr_track.get_media_url(self.ytdl)
-            print(curr_track.url)
+            m_url = self.curr_track[curr_guild].get_media_url(self.ytdl)
+            print(self.curr_track[curr_guild].url)
 
-            embed = discord.Embed(title=curr_track.title, url=curr_track.url,
+            embed = discord.Embed(title=self.curr_track[curr_guild].title, url=self.curr_track[curr_guild].url,
                                   description="Сейчас играет", color=0x46c077)
-            embed.set_thumbnail(url=curr_track.thumbnail)
+            embed.set_thumbnail(url=self.curr_track[curr_guild].thumbnail)
             await ctx.send(embed=embed)
 
             curr_vc.stop()
@@ -367,33 +374,35 @@ class CommandsHandler(commands.Cog):
             def end_s():
                 self.is_live[curr_guild] = False
 
-            if curr_guild not in self.is_live:
-                self.is_live[curr_guild] = False
-            self.is_live[curr_guild] = curr_track.live
+            self.request_data(curr_guild, "is_live", default_value=False)
+            self.is_live[curr_guild] = self.curr_track[curr_guild].live
 
             if self.is_live[curr_guild]:
-                while self.is_live[curr_guild]:
+                while self.is_live[curr_guild] and not self.is_stopped[curr_guild]:
                     try:
                         async with timeout(7200):
                             if curr_vc.is_playing():
                                 curr_vc.stop()
-                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
+                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
+                                             after=lambda x: end_s())
                             else:
-                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end_s())
+                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
+                                             after=lambda x: end_s())
                             while self._is_playing[curr_guild]:
                                 await asyncio.sleep(5)
                     except asyncio.TimeoutError:
-                        m_url = curr_track.get_media_url(self.ytdl)
+                        m_url = self.curr_track[curr_guild].get_media_url(self.ytdl)
 
                 return
             else:
-                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS), after=lambda x: end())
-
-
+                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
+                             after=lambda x: end())
 
     def __autoplay(self, ctx):
         curr_guild = ctx.guild.id
-        print(self._autoplay[curr_guild])
+        if self.is_stopped[curr_guild]:
+            return
+        print("Autoplay")
         options = Options()
         options.add_argument("--headless")
         driver = webdriver.Firefox(firefox_options=options, log_path=os.devnull)
@@ -401,8 +410,9 @@ class CommandsHandler(commands.Cog):
         while True:
             driver.get(self._last_url[curr_guild])
             time.sleep(2)
-            elems = driver.execute_script('return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
-            elems = elems[1: 5 if len(elems) >= 5 else len(elems)-1]
+            elems = driver.execute_script(
+                'return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
+            elems = elems[1: 5 if len(elems) >= 5 else len(elems) - 1]
             track = self.get_ytdl(ctx, random.choice(elems).get_attribute('href'))
             if type(track) in (bool, NoneType) or track.duration > 14400:
                 continue
@@ -411,24 +421,31 @@ class CommandsHandler(commands.Cog):
         self._music_queue[curr_guild].append(track)
 
 
+with open('config.json') as f:
+    config = Config(json.load(f))
+
+try:
+    with open("servers.dat", "rb") as f:
+        servers_data = pickle.load(f)
+except FileNotFoundError:
+    servers_data = {}
+
+
 bot = commands.Bot(config.prefix)
-bot.add_cog(CommandsHandler(bot, config))
+
+cog = CommandsHandler(bot, config, servers_data)
+bot.add_cog(cog)
 
 
 @bot.event
 async def on_ready():
     print("Connected")
 
+
 @bot.event
 async def on_message(message):
+    cog.update_server(await bot.get_context(message))
     await bot.process_commands(message)
 
-# @bot.event
-# async def on_message(message):
-#     await bot.process_commands(message)
 
 bot.run(config.token)
-
-
-
-
