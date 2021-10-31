@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import os
 import pickle
@@ -374,6 +375,10 @@ class CommandsHandler(commands.Cog):
             embed = discord.Embed(title=self.curr_track[curr_guild].title, url=self.curr_track[curr_guild].url,
                                   description="Сейчас играет", color=0x46c077)
             embed.set_thumbnail(url=self.curr_track[curr_guild].thumbnail)
+            if self.curr_track[curr_guild].duration == 0:
+                embed.add_field(name="Длительность", value="Стрим", inline=True)
+            else:
+                embed.add_field(name="Длительность", value=str(datetime.timedelta(seconds=self.curr_track[curr_guild].duration)), inline=True)
             await ctx.send(embed=embed)
 
             curr_vc.stop()
@@ -431,6 +436,11 @@ class CommandsHandler(commands.Cog):
 
         self._music_queue[curr_guild].append(track)
 
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        self.update_server(await self._bot.get_context(message))
+        await bot.process_commands(message)
+
 
 with open('config.json') as f:
     config = Config(json.load(f))
@@ -450,12 +460,6 @@ bot.add_cog(cog)
 @bot.event
 async def on_ready():
     print("Connected")
-
-
-@bot.event
-async def on_message(message):
-    cog.update_server(await bot.get_context(message))
-    await bot.process_commands(message)
 
 
 bot.run(config.token)
