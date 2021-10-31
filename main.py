@@ -293,7 +293,7 @@ class Music(commands.Cog):
         query, _ = query.split("?si=")
         strack = self.sp.track(f"spotify:track:{query}")
         return Track(title=strack['name'], duration=int(strack['duration_ms'] / 1000), song_type=song_type,
-                     url=self.search_yt(ctx, f"{strack['name']} - {strack['artists'][0]['name']}").url,
+                     url=self.search_yt(ctx, f"{strack['name']} - {strack['artists'][0]['name']}", song_type).url,
                      thumbnail=strack['album']['images'][0]['url'])
 
     async def get_spotify_user_playlist(self, ctx, url: str, song_type):
