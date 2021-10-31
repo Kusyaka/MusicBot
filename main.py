@@ -426,6 +426,7 @@ class Music(commands.Cog):
         curr_guild = ctx.guild.id
         curr_vc = await self.get_voice_client(ctx)
         self.curr_track[curr_guild] = self._music_queue[curr_guild][0]
+        print(f"Now playing: {self.curr_track[curr_guild].url}")
         if self.loop[curr_guild]:
             self._music_queue[curr_guild].append(self.curr_track[curr_guild])
         self._music_queue[curr_guild].pop(0)
@@ -527,7 +528,7 @@ class Music(commands.Cog):
         print("Autoplay")
         options = Options()
         options.add_argument("--headless")
-        driver = webdriver.Firefox(options=options, log_path=os.devnull)
+        driver = webdriver.Firefox(firefox_options=options, log_path=os.devnull)
         track = None
         while True:
             driver.get(self._last_url[curr_guild])
@@ -535,7 +536,7 @@ class Music(commands.Cog):
             elems = driver.execute_script(
                 'return document.getElementsByClassName("yt-simple-endpoint inline-block style-scope ytd-thumbnail")')
             elems = elems[1: 5 if len(elems) >= 5 else len(elems) - 1]
-            track = self.get_ytdl(ctx, random.choice(elems).get_attribute('href'))
+            track = self.get_ytdl(ctx, random.choice(elems).get_attribute('href'), Sites.YouTube)
             if type(track) in (bool, NoneType) or track.duration > 14400:
                 continue
             break
