@@ -268,6 +268,18 @@ class CommandsHandler(commands.Cog):
                 await ctx.send(embed=msg)
         await wait_msg.delete()
 
+    async def check_members(self):
+        while True:
+            await asyncio.sleep(30)
+            try:
+                for key in self._vc.keys():
+                    curr_chan = discord.utils.get(self._vc[key].guild.voice_channels, id=self._vc[key].channel.id)
+                    if len(curr_chan.members) == 1:
+                        await self._vc[key].disconnect()
+                        del self._vc[key]
+            except:
+                pass
+
     def search_yt(self, ctx, item, song_type):
         try:
             data = self.ytdl.extract_info(f"ytsearch:{item}", download=False)['entries'][0]
@@ -536,6 +548,11 @@ class CommandsHandler(commands.Cog):
     async def on_message(self, message):
         self.update_server(await self._bot.get_context(message))
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print("Connected")
+        asyncio.get_event_loop().create_task(self.check_members())
+
 
 with open('config.json') as f:
     config = Config(json.load(f))
@@ -550,11 +567,6 @@ bot = commands.Bot(config.prefix)
 
 cog = CommandsHandler(bot, config, servers_data)
 bot.add_cog(cog)
-
-
-@bot.event
-async def on_ready():
-    print("Connected")
 
 
 bot.run(config.token)
