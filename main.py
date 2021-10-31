@@ -24,6 +24,7 @@ NoneType = type(None)
 class Sites(Enum):
     Spotify = "Spotify"
     Spotify_Playlist = "Spotify Playlist"
+    Spotify_User_Playlist = "Spotify User Playlist"
     YouTube = "YouTube"
     Twitter = "Twitter"
     SoundCloud = "SoundCloud"
@@ -53,7 +54,6 @@ class Config:
         with open(filename, "w") as f:
             json.dump(vars(self), f)
 
-
 class Track(Config):
     def __init__(self, title, duration, url, thumbnail, live=False, config_dict: dict = None, **kwargs):
         super().__init__(config_dict, **kwargs)
@@ -65,6 +65,8 @@ class Track(Config):
 
     def get_media_url(self, ytdl: YoutubeDL):
         data = ytdl.extract_info(url=self.url, download=False)
+        if 'entries' in data:
+            data = data['entries'][0]
         return data['url']
 
     def create_embed(self):
@@ -124,8 +126,12 @@ class CommandsHandler(commands.Cog):
             client_id=config.spotify_client_id,
             client_secret=config.spotify_client_secret))
 
+    def log(self, ctx, command):
+        print(f"[{ctx.author}][{ctx.guild.name}] {command}")
+
     @commands.command(aliases=['sk'])
     async def skip(self, ctx):
+        self.log(ctx, "skip")
         curr_guild = ctx.guild.id
         self.is_live[curr_guild] = False
         self._is_playing[curr_guild] = False
@@ -134,6 +140,7 @@ class CommandsHandler(commands.Cog):
 
     @commands.command()
     async def stop(self, ctx):
+        self.log(ctx, "stop")
         curr_guild = ctx.guild.id
         self.is_stopped[curr_guild] = True
         self.is_live[curr_guild] = False
@@ -142,9 +149,11 @@ class CommandsHandler(commands.Cog):
         (await self.get_voice_client(ctx)).stop()
         self._is_playing[curr_guild] = False
         self.loop[curr_guild] = False
+        await ctx.send("Stopped")
 
     @commands.command()
     async def leave(self, ctx):
+        self.log(ctx, "leave")
         curr_guild = ctx.guild.id
 
         await self.stop(ctx)
@@ -154,6 +163,7 @@ class CommandsHandler(commands.Cog):
 
     @commands.command()
     async def join(self, ctx):
+        self.log(ctx, "join")
         await self.get_voice_client(ctx)
 
     def request_data(self, curr_guild, data, default_value: Any = True):
@@ -165,6 +175,7 @@ class CommandsHandler(commands.Cog):
 
     @commands.command(name="loop")
     async def _loop(self, ctx):
+        self.log(ctx, "loop")
         curr_guild = ctx.guild.id
 
         self.request_data(curr_guild, "loop")
@@ -178,6 +189,7 @@ class CommandsHandler(commands.Cog):
 
     @commands.command(aliases=['auto'])
     async def autoplay(self, ctx):
+        self.log(ctx, "auto")
         curr_guild = ctx.guild.id
         self.servers[curr_guild].autoplay = not self.servers[curr_guild].autoplay
         if self.servers[curr_guild].autoplay:
@@ -186,16 +198,33 @@ class CommandsHandler(commands.Cog):
             await ctx.send("Autoplay disabled")
         self.save_server()
 
-    @commands.command()
+    @commands.command(aliases=['q'])
     async def queue(self, ctx: commands.Context):
+        self.log(ctx, "queue")
         txt = ""
         for i, q in enumerate(self._music_queue[ctx.guild.id]):
             txt += f"{i + 1}. **{q.title}**\n"
+        max_ln = 2000
+        if len(txt) > max_ln:
+            txt_lines = txt.split("\n")
+            chunked_txt = ""
+            for ln in txt_lines:
+                if len(chunked_txt + ln) > max_ln:
+                    await ctx.send(chunked_txt)
+                    chunked_txt = ""
+                chunked_txt += ln
+                chunked_txt += "\n"
+        else:
+            await ctx.send(txt)
 
-        await ctx.send(txt)
+    @commands.command(aliases=['sh'])
+    async def shuffle(self, ctx):
+        self.log(ctx, "shuffle")
+        random.shuffle(self._music_queue[ctx.guild.id])
 
     @commands.command(aliases=['p', 'pl'])
     async def play(self, ctx, *, query: str):
+        self.log(ctx, ctx.message.content)
         curr_guild = ctx.guild.id
         self.is_stopped[curr_guild] = False
         self.loop[curr_guild] = False
@@ -205,58 +234,120 @@ class CommandsHandler(commands.Cog):
         wait_msg = await ctx.send(embed=wait_msg)
 
         if song_type == Sites.Unknown:
-            track = self.search_yt(ctx, query)
+            track = self.search_yt(ctx, query, song_type)
         elif song_type == Sites.YouTube:
-            track = self.get_ytdl(ctx, query)
+            track = self.get_ytdl(ctx, query, song_type)
         elif song_type == Sites.Spotify:
-            track = self.get_spotify_track(ctx, query)
+            track = self.get_spotify_track(ctx, query, song_type)
+        elif song_type == Sites.Spotify_User_Playlist:
+            track = await self.get_spotify_user_playlist(ctx, query, Sites.Spotify_Playlist)
+        elif song_type == Sites.Spotify_Playlist:
+            track = await self.get_spotify_playlist(ctx, query, song_type)
 
-        await wait_msg.delete()
         if isinstance(track, bool):
+            await wait_msg.delete()
             embed = discord.Embed(title="Не найдено", description=query, color=0xff0000)
             msg = await ctx.send(embed=embed)
             await msg.delete(delay=5)
             return
 
-        track.add_data(type=song_type)
-
         self.request_data(curr_guild, "_music_queue", default_value=[])
-        self._music_queue[curr_guild].append(track)
         self.request_data(curr_guild, "_is_playing", default_value=False)
+
+        if isinstance(track, list):
+            self._music_queue[curr_guild] += track
+        else:
+            self._music_queue[curr_guild].append(track)
 
         if not self._is_playing[curr_guild]:
             asyncio.get_event_loop().create_task(self._play_queue(ctx))
         else:
-            wait_msg = discord.Embed(title="Добавлено в очередь", description=track.title, url=track.url,
-                                     color=0x46c077)
-            await ctx.send(embed=wait_msg)
+            if not isinstance(track, list):
+                msg = discord.Embed(title="Добавлено в очередь", description=track.title, url=track.url,
+                                         color=0x46c077)
+                await ctx.send(embed=msg)
+        await wait_msg.delete()
 
-    def search_yt(self, ctx, item):
+    def search_yt(self, ctx, item, song_type):
         try:
             data = self.ytdl.extract_info(f"ytsearch:{item}", download=False)['entries'][0]
             self._last_url[ctx.guild.id] = data['webpage_url']
-            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],
+            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],song_type=song_type,
                          thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
         except:
             return False
 
-    def get_ytdl(self, ctx, url):
+    def get_ytdl(self, ctx, url, song_type):
         try:
             data = self.ytdl.extract_info(url, download=False)
             self._last_url[ctx.guild.id] = url
 
-            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],
+            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],song_type=song_type,
                          thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
         except:
             return False
 
-    def get_spotify_track(self, ctx, url: str):
+    def get_spotify_track(self, ctx, url: str, song_type):
         query = url.replace("https://open.spotify.com/track/", "")
         query, _ = query.split("?si=")
         strack = self.sp.track(f"spotify:track:{query}")
-        return Track(title=strack['name'], duration=int(strack['duration_ms'] / 1000),
-                     url=self.search_yt(ctx, f"{strack['name']} - {strack['artists'][0]['name']}").url,
+        return Track(title=strack['name'], duration=int(strack['duration_ms'] / 1000),song_type=song_type,
+                     url=self.search_yt(ctx,f"{strack['name']} - {strack['artists'][0]['name']}").url,
                      thumbnail=strack['album']['images'][0]['url'])
+
+    async def get_spotify_user_playlist(self, ctx, url: str, song_type):
+        # https://open.spotify.com/user/z94mky2mjmv9camvvney7wxo2/playlist/5nM0PENVxsDumIga1BJjqC?si=9t13s8hSSMaMV8vWe7z_5w
+        curr_guild = ctx.guild.id
+        query = url.replace("https://open.spotify.com/user/", "")
+        user, play_id = query.split("/playlist/")
+        play_id, _ = play_id.split("?si=")
+        playlist = self.sp.playlist(f"spotify:user:{user}:playlist:{play_id}")
+        res = playlist['tracks']
+        tracks = res['items']
+        while res['next']:
+            res = self.sp.next(res)
+            tracks.extend(res['items'])
+        output = []
+
+        for t in tracks:
+            output.append(Track(title=t['track']['name'], duration=int(t['track']['duration_ms']/1000),
+                                song_type=song_type,
+                                url=f"{t['track']['name']} - {t['track']['artists'][0]['name']}",
+                                thumbnail=t['track']['album']['images'][0]['url']))
+
+        embed = discord.Embed(title=playlist['name'], url=playlist['external_urls']['spotify'],
+                              description="Добавлено в очередь", color=0x46c077)
+        embed.set_thumbnail(url=playlist['images'][0]['url'])
+        embed.add_field(name="Треков", value=str(len(output)), inline=True)
+        await ctx.send(embed=embed)
+
+        return output
+
+    async def get_spotify_playlist(self, ctx, url: str, song_type):
+        # https://open.spotify.com/playlist/5PP7FlIhbxm90bgY4jyF4r?si=J2uZjh6NTZeTftmcEDMrpQ&utm_source=copy-link
+        query = url.replace("https://open.spotify.com/playlist/", "")
+        play_id, _ = query.split("?si=")
+        playlist = self.sp.playlist(f"spotify:playlist:{play_id}")
+        res = playlist['tracks']
+        tracks = res['items']
+        while res['next']:
+            res = self.sp.next(res)
+            tracks.extend(res['items'])
+        output = []
+
+        for t in tracks:
+            output.append(Track(title=t['track']['name'], duration=int(t['track']['duration_ms'] / 1000),
+                                song_type=song_type,
+                                url=f"{t['track']['name']} - {t['track']['artists'][0]['name']}",
+                                thumbnail=t['track']['album']['images'][0]['url']))
+
+        embed = discord.Embed(title=playlist['name'], url=playlist['external_urls']['spotify'],
+                              description="Добавлено в очередь", color=0x46c077)
+        embed.set_thumbnail(url=playlist['images'][0]['url'])
+        embed.add_field(name="Треков", value=str(len(output)), inline=True)
+        await ctx.send(embed=embed)
+
+        return output
 
     def identify_url(self, url):
         if url is None:
@@ -268,17 +359,20 @@ class CommandsHandler(commands.Cog):
         if "https://open.spotify.com/track" in url:
             return Sites.Spotify
 
-        if "https://open.spotify.com/playlist" in url or "https://open.spotify.com/album" in url:
+        if 'https://open.spotify.com/playlist/' in url:
             return Sites.Spotify_Playlist
 
-        if "bandcamp.com/track/" in url:
-            return Sites.Bandcamp
+        if 'https://open.spotify.com/user/' in url and '/playlist' in url:
+            return Sites.Spotify_User_Playlist
 
-        if "https://twitter.com/" in url:
-            return Sites.Twitter
-
-        if "soundcloud.com/" in url:
-            return Sites.SoundCloud
+        # if "bandcamp.com/track/" in url:
+        #     return Sites.Bandcamp
+        #
+        # if "https://twitter.com/" in url:
+        #     return Sites.Twitter
+        #
+        # if "soundcloud.com/" in url:
+        #     return Sites.SoundCloud
 
         # If no match
         return Sites.Unknown
@@ -335,6 +429,9 @@ class CommandsHandler(commands.Cog):
             self._music_queue[curr_guild].append(self.curr_track[curr_guild])
         self._music_queue[curr_guild].pop(0)
 
+        if self.curr_track[curr_guild].song_type == Sites.Spotify_Playlist:
+            self.curr_track[curr_guild] = self.search_yt(ctx, self.curr_track[curr_guild].url, Sites.Unknown)
+
         if 9000 < self.curr_track[curr_guild].duration <= 14400:
             if not os.path.exists(f"./{self.curr_track[curr_guild].id}.mp3"):
                 wait_msg = discord.Embed(title="Трек скачивается...", description="Может занять много времени",
@@ -370,7 +467,6 @@ class CommandsHandler(commands.Cog):
 
         else:
             m_url = self.curr_track[curr_guild].get_media_url(self.ytdl)
-            print(self.curr_track[curr_guild].url)
 
             embed = discord.Embed(title=self.curr_track[curr_guild].title, url=self.curr_track[curr_guild].url,
                                   description="Сейчас играет", color=0x46c077)
@@ -439,7 +535,6 @@ class CommandsHandler(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         self.update_server(await self._bot.get_context(message))
-        await bot.process_commands(message)
 
 
 with open('config.json') as f:
