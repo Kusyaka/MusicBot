@@ -54,6 +54,7 @@ class Config:
         with open(filename, "w") as f:
             json.dump(vars(self), f)
 
+
 class Track(Config):
     def __init__(self, title, duration, url, thumbnail, live=False, config_dict: dict = None, **kwargs):
         super().__init__(config_dict, **kwargs)
@@ -80,7 +81,7 @@ class Track(Config):
         return embed
 
 
-class CommandsHandler(commands.Cog):
+class Music(commands.Cog):
     def __init__(self, bot, config, servers_data):
         self._bot = bot
         self._config = config
@@ -264,27 +265,15 @@ class CommandsHandler(commands.Cog):
         else:
             if not isinstance(track, list):
                 msg = discord.Embed(title="Добавлено в очередь", description=track.title, url=track.url,
-                                         color=0x46c077)
+                                    color=0x46c077)
                 await ctx.send(embed=msg)
         await wait_msg.delete()
-
-    async def check_members(self):
-        while True:
-            await asyncio.sleep(30)
-            try:
-                for key in self._vc.keys():
-                    curr_chan = discord.utils.get(self._vc[key].guild.voice_channels, id=self._vc[key].channel.id)
-                    if len(curr_chan.members) == 1:
-                        await self._vc[key].disconnect()
-                        del self._vc[key]
-            except:
-                pass
 
     def search_yt(self, ctx, item, song_type):
         try:
             data = self.ytdl.extract_info(f"ytsearch:{item}", download=False)['entries'][0]
             self._last_url[ctx.guild.id] = data['webpage_url']
-            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],song_type=song_type,
+            return Track(title=data['title'], url=data['webpage_url'], id=data["id"], song_type=song_type,
                          thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
         except:
             return False
@@ -294,7 +283,7 @@ class CommandsHandler(commands.Cog):
             data = self.ytdl.extract_info(url, download=False)
             self._last_url[ctx.guild.id] = url
 
-            return Track(title=data['title'], url=data['webpage_url'], id=data["id"],song_type=song_type,
+            return Track(title=data['title'], url=data['webpage_url'], id=data["id"], song_type=song_type,
                          thumbnail=data['thumbnail'], duration=data['duration'], live=data['is_live'])
         except:
             return False
@@ -303,8 +292,8 @@ class CommandsHandler(commands.Cog):
         query = url.replace("https://open.spotify.com/track/", "")
         query, _ = query.split("?si=")
         strack = self.sp.track(f"spotify:track:{query}")
-        return Track(title=strack['name'], duration=int(strack['duration_ms'] / 1000),song_type=song_type,
-                     url=self.search_yt(ctx,f"{strack['name']} - {strack['artists'][0]['name']}").url,
+        return Track(title=strack['name'], duration=int(strack['duration_ms'] / 1000), song_type=song_type,
+                     url=self.search_yt(ctx, f"{strack['name']} - {strack['artists'][0]['name']}").url,
                      thumbnail=strack['album']['images'][0]['url'])
 
     async def get_spotify_user_playlist(self, ctx, url: str, song_type):
@@ -322,7 +311,7 @@ class CommandsHandler(commands.Cog):
         output = []
 
         for t in tracks:
-            output.append(Track(title=t['track']['name'], duration=int(t['track']['duration_ms']/1000),
+            output.append(Track(title=t['track']['name'], duration=int(t['track']['duration_ms'] / 1000),
                                 song_type=song_type,
                                 url=f"{t['track']['name']} - {t['track']['artists'][0]['name']}",
                                 thumbnail=t['track']['album']['images'][0]['url']))
@@ -486,7 +475,9 @@ class CommandsHandler(commands.Cog):
             if self.curr_track[curr_guild].duration == 0:
                 embed.add_field(name="Длительность", value="Стрим", inline=True)
             else:
-                embed.add_field(name="Длительность", value=str(datetime.timedelta(seconds=self.curr_track[curr_guild].duration)), inline=True)
+                embed.add_field(name="Длительность",
+                                value=str(datetime.timedelta(seconds=self.curr_track[curr_guild].duration)),
+                                inline=True)
             await ctx.send(embed=embed)
 
             curr_vc.stop()
@@ -516,11 +507,18 @@ class CommandsHandler(commands.Cog):
                                 await asyncio.sleep(5)
                     except asyncio.TimeoutError:
                         m_url = self.curr_track[curr_guild].get_media_url(self.ytdl)
+                    except discord.errors.ClientException:
+                        curr_vc = await self.get_voice_client(ctx)
 
                 return
             else:
-                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
-                             after=lambda x: end())
+                try:
+                    curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
+                                 after=lambda x: end())
+                except discord.errors.ClientException:
+                    curr_vc = await self.get_voice_client(ctx)
+                    curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
+                                 after=lambda x: end())
 
     def __autoplay(self, ctx):
         curr_guild = ctx.guild.id
@@ -529,7 +527,7 @@ class CommandsHandler(commands.Cog):
         print("Autoplay")
         options = Options()
         options.add_argument("--headless")
-        driver = webdriver.Firefox(firefox_options=options, log_path=os.devnull)
+        driver = webdriver.Firefox(options=options, log_path=os.devnull)
         track = None
         while True:
             driver.get(self._last_url[curr_guild])
@@ -551,7 +549,6 @@ class CommandsHandler(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print("Connected")
-        asyncio.get_event_loop().create_task(self.check_members())
 
 
 with open('config.json') as f:
@@ -565,8 +562,7 @@ except FileNotFoundError:
 
 bot = commands.Bot(config.prefix)
 
-cog = CommandsHandler(bot, config, servers_data)
+cog = Music(bot, config, servers_data)
 bot.add_cog(cog)
-
 
 bot.run(config.token)
