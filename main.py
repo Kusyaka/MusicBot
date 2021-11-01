@@ -434,38 +434,12 @@ class Music(commands.Cog):
         if self.curr_track[curr_guild].song_type == Sites.Spotify_Playlist:
             self.curr_track[curr_guild] = self.search_yt(ctx, self.curr_track[curr_guild].url, Sites.Unknown)
 
-        if 9000 < self.curr_track[curr_guild].duration <= 14400:
-            if not os.path.exists(f"./{self.curr_track[curr_guild].id}.mp3"):
-                wait_msg = discord.Embed(title="Трек скачивается...", description="Может занять много времени",
-                                         color=discord.Color.orange())
-                wait_msg = await ctx.send(embed=wait_msg)
-                with YoutubeDL({
-                    'format': 'bestaudio/best',
-                    'keepvideo': False,
-                    'outtmpl': f"./{self.curr_track[curr_guild].id}.mp3",
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                }) as ytdl:
-                    ytdl.download([self.curr_track[curr_guild].url])
-
-                await wait_msg.delete()
-
-            embed = discord.Embed(title=self.curr_track[curr_guild].title, url=self.curr_track[curr_guild].url,
-                                  description="Сейчас играет", color=0x46c077)
-            embed.set_thumbnail(url=self.curr_track[curr_guild].thumbnail)
-            await ctx.send(embed=embed)
-
-            curr_vc.play(discord.FFmpegPCMAudio(source=f"./{self.curr_track[curr_guild].id}.mp3"),
-                         after=lambda x: end())
-
-        elif self.curr_track[curr_guild].duration > 14400:
+        if self.curr_track[curr_guild].duration > 18000:
             wait_msg = discord.Embed(title="Трек слишком длинный",
                                      description="Попробуйте найти более короткую версию песни",
                                      color=discord.Color.dark_red())
             await ctx.send(embed=wait_msg)
+            return
 
         else:
             m_url = self.curr_track[curr_guild].get_media_url(self.ytdl)
