@@ -126,6 +126,7 @@ class Music(commands.Cog):
         self.sp = spotipy.Spotify = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
             client_id=config.spotify_client_id,
             client_secret=config.spotify_client_secret))
+        self.m_url = {}
 
     def log(self, ctx, command):
         print(f"[{ctx.author}][{ctx.guild.name}] {command}")
@@ -442,7 +443,7 @@ class Music(commands.Cog):
             return
 
         else:
-            m_url = self.curr_track[curr_guild].get_media_url(self.ytdl)
+            self.m_url[curr_guild] = self.curr_track[curr_guild].get_media_url(self.ytdl)
 
             embed = discord.Embed(title=self.curr_track[curr_guild].title, url=self.curr_track[curr_guild].url,
                                   description="Сейчас играет", color=0x46c077)
@@ -469,30 +470,25 @@ class Music(commands.Cog):
 
             if self.is_live[curr_guild]:
                 while self.is_live[curr_guild] and not self.is_stopped[curr_guild]:
-                    try:
-                        async with timeout(7200):
-                            if curr_vc.is_playing():
-                                curr_vc.stop()
-                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
-                                             after=lambda x: end_s())
-                            else:
-                                curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
-                                             after=lambda x: end_s())
-                            while self._is_playing[curr_guild]:
-                                await asyncio.sleep(5)
-                    except asyncio.TimeoutError:
-                        m_url = self.curr_track[curr_guild].get_media_url(self.ytdl)
-                    except discord.errors.ClientException:
-                        curr_vc = await self.get_voice_client(ctx)
-
+                    asyncio.get_event_loop().create_task(self.timeot_reconnect(ctx, self.curr_track[curr_guild]))
+                    if curr_vc.is_playing():
+                        curr_vc.stop()
+                        curr_vc.play(await discord.FFmpegOpusAudio.from_probe(self.m_url[curr_guild], **self._FFMPEG_OPTIONS),
+                                     after=lambda x: end_s())
+                    else:
+                        curr_vc.play(await discord.FFmpegOpusAudio.from_probe(self.m_url[curr_guild], **self._FFMPEG_OPTIONS),
+                                     after=lambda x: end_s())
+                    while self._is_playing[curr_guild]:
+                        await asyncio.sleep(5)
                 return
+
             else:
                 try:
-                    curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
+                    curr_vc.play(await discord.FFmpegOpusAudio.from_probe(self.m_url[curr_guild], **self._FFMPEG_OPTIONS),
                                  after=lambda x: end())
                 except discord.errors.ClientException:
                     curr_vc = await self.get_voice_client(ctx)
-                    curr_vc.play(await discord.FFmpegOpusAudio.from_probe(m_url, **self._FFMPEG_OPTIONS),
+                    curr_vc.play(await discord.FFmpegOpusAudio.from_probe(self.m_url[curr_guild], **self._FFMPEG_OPTIONS),
                                  after=lambda x: end())
 
     def __autoplay(self, ctx):
@@ -516,6 +512,14 @@ class Music(commands.Cog):
             break
 
         self._music_queue[curr_guild].append(track)
+
+    async def timeot_reconnect(self, ctx, curr_track):
+        await asyncio.sleep(20000)
+        curr_guild = ctx.guild.id
+        if curr_track == self.curr_track[curr_guild]:
+            await self.get_voice_client(ctx)
+            self._music_queue[curr_guild].insert(0, self.curr_track[curr_guild])
+            await self.skip(ctx)
 
     @commands.Cog.listener()
     async def on_message(self, message):
