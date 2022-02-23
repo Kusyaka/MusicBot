@@ -1,6 +1,9 @@
 {
-  "token": "",
+  "tokens": {
+    "__TOKEN__":  ["ALL"]
+  },
   "spotify_client_id": "",
   "spotify_client_secret": "",
-  "prefix": "_"
+  "owners": [
+  ]
 }
